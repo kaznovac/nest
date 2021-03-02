@@ -1,0 +1,68 @@
+Index: packages/core/nest-application.ts
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>import {\n  CanActivate,\n  ExceptionFilter,\n  HttpServer,\n  INestApplication,\n  INestMicroservice,\n  NestHybridApplicationOptions,\n  NestInterceptor,\n  PipeTransform,\n  WebSocketAdapter,\n} from '@nestjs/common';\nimport { CorsOptions } from '@nestjs/common/interfaces/external/cors-options.interface';\nimport { NestApplicationOptions } from '@nestjs/common/interfaces/nest-application-options.interface';\nimport { Logger } from '@nestjs/common/services/logger.service';\nimport { loadPackage } from '@nestjs/common/utils/load-package.util';\nimport { isObject, validatePath } from '@nestjs/common/utils/shared.utils';\nimport { iterate } from 'iterare';\nimport { platform } from 'os';\nimport { AbstractHttpAdapter } from './adapters';\nimport { ApplicationConfig } from './application-config';\nimport { MESSAGES } from './constants';\nimport { optionalRequire } from './helpers/optional-require';\nimport { NestContainer } from './injector/container';\nimport { MiddlewareContainer } from './middleware/container';\nimport { MiddlewareModule } from './middleware/middleware-module';\nimport { NestApplicationContext } from './nest-application-context';\nimport { Resolver } from './router/interfaces/resolver.interface';\nimport { RoutesResolver } from './router/routes-resolver';\n\nconst { SocketModule } = optionalRequire(\n  '@nestjs/websockets/socket-module',\n  () => require('@nestjs/websockets/socket-module'),\n);\nconst {\n  MicroservicesModule,\n} = optionalRequire('@nestjs/microservices/microservices-module', () =>\n  require('@nestjs/microservices/microservices-module'),\n);\n\n/**\n * @publicApi\n */\nexport class NestApplication\n  extends NestApplicationContext\n  implements INestApplication {\n  private readonly logger = new Logger(NestApplication.name, true);\n  private readonly middlewareModule = new MiddlewareModule();\n  private readonly middlewareContainer = new MiddlewareContainer(\n    this.container,\n  );\n  private readonly microservicesModule =\n    MicroservicesModule && new MicroservicesModule();\n  private readonly socketModule = SocketModule && new SocketModule();\n  private readonly routesResolver: Resolver;\n  private readonly microservices: any[] = [];\n  private httpServer: any;\n  private isListening = false;\n\n  constructor(\n    container: NestContainer,\n    private readonly httpAdapter: HttpServer,\n    private readonly config: ApplicationConfig,\n    private readonly appOptions: NestApplicationOptions = {},\n  ) {\n    super(container);\n\n    this.selectContextModule();\n    this.registerHttpServer();\n\n    this.routesResolver = new RoutesResolver(\n      this.container,\n      this.config,\n      this.injector,\n    );\n  }\n\n  protected async dispose(): Promise<void> {\n    this.socketModule && (await this.socketModule.close());\n    this.httpAdapter && (await this.httpAdapter.close());\n\n    await Promise.all(\n      iterate(this.microservices).map(async microservice => {\n        microservice.setIsTerminated(true);\n        await microservice.close();\n      }),\n    );\n  }\n\n  public getHttpAdapter(): AbstractHttpAdapter {\n    return this.httpAdapter as AbstractHttpAdapter;\n  }\n\n  public registerHttpServer() {\n    this.httpServer = this.createServer();\n  }\n\n  public getUnderlyingHttpServer<T>(): T {\n    return this.httpAdapter.getHttpServer();\n  }\n\n  public applyOptions() {\n    if (!this.appOptions || !this.appOptions.cors) {\n      return undefined;\n    }\n    const isCorsOptionsObj = isObject(this.appOptions.cors);\n    if (!isCorsOptionsObj) {\n      return this.enableCors();\n    }\n    return this.enableCors(this.appOptions.cors as CorsOptions);\n  }\n\n  public createServer<T = any>(): T {\n    this.httpAdapter.initHttpServer(this.appOptions);\n    return this.httpAdapter.getHttpServer() as T;\n  }\n\n  public async registerModules() {\n    this.registerWsModule();\n\n    if (this.microservicesModule) {\n      this.microservicesModule.register(this.container, this.config);\n      this.microservicesModule.setupClients(this.container);\n    }\n    await this.middlewareModule.register(\n      this.middlewareContainer,\n      this.container,\n      this.config,\n      this.injector,\n      this.httpAdapter,\n    );\n  }\n\n  public registerWsModule() {\n    if (!this.socketModule) {\n      return;\n    }\n    this.socketModule.register(this.container, this.config, this.httpServer);\n  }\n\n  public async init(): Promise<this> {\n    this.applyOptions();\n    await this.httpAdapter?.init();\n\n    const useBodyParser =\n      this.appOptions && this.appOptions.bodyParser !== false;\n    useBodyParser && this.registerParserMiddleware();\n\n    await this.registerModules();\n    await this.registerRouter();\n    await this.callInitHook();\n    await this.registerRouterHooks();\n    await this.callBootstrapHook();\n\n    this.isInitialized = true;\n    this.logger.log(MESSAGES.APPLICATION_READY);\n    return this;\n  }\n\n  public registerParserMiddleware() {\n    this.httpAdapter.registerParserMiddleware();\n  }\n\n  public async registerRouter() {\n    await this.registerMiddleware(this.httpAdapter);\n\n    const prefix = this.config.getGlobalPrefix();\n    const basePath = validatePath(prefix);\n    this.routesResolver.resolve(this.httpAdapter, basePath);\n  }\n\n  public async registerRouterHooks() {\n    this.routesResolver.registerNotFoundHandler();\n    this.routesResolver.registerExceptionHandler();\n  }\n\n  public connectMicroservice<T extends object>(\n    microserviceOptions: T,\n    hybridAppOptions: NestHybridApplicationOptions = {},\n  ): INestMicroservice {\n    const { NestMicroservice } = loadPackage(\n      '@nestjs/microservices',\n      'NestFactory',\n      () => require('@nestjs/microservices'),\n    );\n    const { inheritAppConfig } = hybridAppOptions;\n    const applicationConfig = inheritAppConfig\n      ? this.config\n      : new ApplicationConfig();\n\n    const instance = new NestMicroservice(\n      this.container,\n      microserviceOptions,\n      applicationConfig,\n    );\n    instance.registerListeners();\n    instance.setIsInitialized(true);\n    instance.setIsInitHookCalled(true);\n\n    this.microservices.push(instance);\n    return instance;\n  }\n\n  public getMicroservices(): INestMicroservice[] {\n    return this.microservices;\n  }\n\n  public getHttpServer() {\n    return this.httpServer;\n  }\n\n  public startAllMicroservices(callback?: () => void): this {\n    Promise.all(this.microservices.map(this.listenToPromise)).then(\n      () => callback && callback(),\n    );\n    return this;\n  }\n\n  public startAllMicroservicesAsync(): Promise<void> {\n    return new Promise(resolve => this.startAllMicroservices(resolve));\n  }\n\n  public use(...args: [any, any?]): this {\n    this.httpAdapter.use(...args);\n    return this;\n  }\n\n  public enableCors(options?: CorsOptions): void {\n    this.httpAdapter.enableCors(options);\n  }\n\n  public async listen(\n    port: number | string,\n    callback?: () => void,\n  ): Promise<any>;\n  public async listen(\n    port: number | string,\n    hostname: string,\n    callback?: () => void,\n  ): Promise<any>;\n  public async listen(port: number | string, ...args: any[]): Promise<any> {\n    !this.isInitialized && (await this.init());\n    this.httpAdapter.listen(port, ...args);\n    this.isListening = true;\n    return this.httpServer;\n  }\n\n  public listenAsync(port: number | string, hostname?: string): Promise<any> {\n    return new Promise(resolve => {\n      const server: any = this.listen(port, hostname, () => resolve(server));\n    });\n  }\n\n  public async getUrl(): Promise<string> {\n    return new Promise((resolve, reject) => {\n      if (!this.isListening) {\n        this.logger.error(MESSAGES.CALL_LISTEN_FIRST);\n        reject(MESSAGES.CALL_LISTEN_FIRST);\n      }\n      this.httpServer.on('listening', () => {\n        const address = this.httpServer.address();\n        if (typeof address === 'string') {\n          if (platform() === 'win32') {\n            return address;\n          }\n          const basePath = encodeURIComponent(address);\n          return `${this.getProtocol()}+unix://${basePath}`;\n        }\n        let host = this.host();\n        if (address && address.family === 'IPv6') {\n          if (host === '::') {\n            host = '[::1]';\n          } else {\n            host = `[${host}]`;\n          }\n        } else if (host === '0.0.0.0') {\n          host = '127.0.0.1';\n        }\n        resolve(`${this.getProtocol()}://${host}:${address.port}`);\n      });\n    });\n  }\n\n  public setGlobalPrefix(prefix: string): this {\n    this.config.setGlobalPrefix(prefix);\n    return this;\n  }\n\n  public useWebSocketAdapter(adapter: WebSocketAdapter): this {\n    this.config.setIoAdapter(adapter);\n    return this;\n  }\n\n  public useGlobalFilters(...filters: ExceptionFilter[]): this {\n    this.config.useGlobalFilters(...filters);\n    return this;\n  }\n\n  public useGlobalPipes(...pipes: PipeTransform<any>[]): this {\n    this.config.useGlobalPipes(...pipes);\n    return this;\n  }\n\n  public useGlobalInterceptors(...interceptors: NestInterceptor[]): this {\n    this.config.useGlobalInterceptors(...interceptors);\n    return this;\n  }\n\n  public useGlobalGuards(...guards: CanActivate[]): this {\n    this.config.useGlobalGuards(...guards);\n    return this;\n  }\n\n  public useStaticAssets(options: any): this;\n  public useStaticAssets(path: string, options?: any): this;\n  public useStaticAssets(pathOrOptions: any, options?: any): this {\n    this.httpAdapter.useStaticAssets &&\n      this.httpAdapter.useStaticAssets(pathOrOptions, options);\n    return this;\n  }\n\n  public setBaseViewsDir(path: string | string[]): this {\n    this.httpAdapter.setBaseViewsDir && this.httpAdapter.setBaseViewsDir(path);\n    return this;\n  }\n\n  public setViewEngine(engineOrOptions: any): this {\n    this.httpAdapter.setViewEngine &&\n      this.httpAdapter.setViewEngine(engineOrOptions);\n    return this;\n  }\n  private host(): string | undefined {\n    const address = this.httpServer.address();\n    if (typeof address === 'string') {\n      return undefined;\n    }\n    return address && address.address;\n  }\n\n  private getProtocol(): 'http' | 'https' {\n    return this.appOptions && this.appOptions.httpsOptions ? 'https' : 'http';\n  }\n\n  private async registerMiddleware(instance: any) {\n    await this.middlewareModule.registerMiddleware(\n      this.middlewareContainer,\n      instance,\n    );\n  }\n\n  private listenToPromise(microservice: INestMicroservice) {\n    return new Promise(async resolve => {\n      await microservice.listen(resolve);\n    });\n  }\n}\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/packages/core/nest-application.ts b/packages/core/nest-application.ts
+--- a/packages/core/nest-application.ts	(revision 3044e1555f04143800f0802262bec8af64d8f09e)
++++ b/packages/core/nest-application.ts	(date 1607090307085)
+@@ -52,7 +52,7 @@
+     MicroservicesModule && new MicroservicesModule();
+   private readonly socketModule = SocketModule && new SocketModule();
+   private readonly routesResolver: Resolver;
+-  private readonly microservices: any[] = [];
++  private readonly microservices: INestMicroservice[] = [];
+   private httpServer: any;
+   private isListening = false;
+ 
+@@ -80,7 +80,7 @@
+ 
+     await Promise.all(
+       iterate(this.microservices).map(async microservice => {
+-        microservice.setIsTerminated(true);
++        // microservice.setIsTerminated(true); // close sets this is this needed to prevent termination? seems like it prevents hooks from firing, nope that's the second onw in close xD
+         await microservice.close();
+       }),
+     );
+@@ -192,9 +192,6 @@
+       microserviceOptions,
+       applicationConfig,
+     );
+-    instance.registerListeners();
+-    instance.setIsInitialized(true);
+-    instance.setIsInitHookCalled(true);
+ 
+     this.microservices.push(instance);
+     return instance;
+@@ -209,7 +206,7 @@
+   }
+ 
+   public startAllMicroservices(callback?: () => void): this {
+-    Promise.all(this.microservices.map(this.listenToPromise)).then(
++    Promise.all(this.microservices.map(m => m.listenAsync())).then(
+       () => callback && callback(),
+     );
+     return this;
+@@ -346,10 +343,14 @@
+       instance,
+     );
+   }
+-
+-  private listenToPromise(microservice: INestMicroservice) {
+-    return new Promise(async resolve => {
+-      await microservice.listen(resolve);
+-    });
+-  }
++  //
++  // private microserviceListenToPromise(microservice: INestMicroservice) {
++  //   return new Promise(async resolve => {
++  //     // microservice.registerListeners(); // not needed init / listen does this, this just breaks application config
++  //     // microservice.setIsInitialized(true);
++  //     // microservice.setIsInitHookCalled(true);
++  //
++  //     await microservice.listen(resolve);
++  //   });
++  // }
+ }

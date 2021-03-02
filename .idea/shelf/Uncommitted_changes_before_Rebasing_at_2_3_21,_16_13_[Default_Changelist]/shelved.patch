@@ -1,0 +1,19 @@
+Index: packages/core/exceptions/base-exception-filter.ts
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>import {\n  ArgumentsHost,\n  ExceptionFilter,\n  HttpException,\n  HttpServer,\n  HttpStatus,\n  Inject,\n  Logger,\n  Optional,\n} from '@nestjs/common';\nimport { isObject } from '@nestjs/common/utils/shared.utils';\nimport { AbstractHttpAdapter } from '../adapters';\nimport { MESSAGES } from '../constants';\nimport { HttpAdapterHost } from '../helpers';\n\nexport class BaseExceptionFilter<T = any> implements ExceptionFilter<T> {\n  private static readonly logger = new Logger('ExceptionsHandler');\n\n  @Optional()\n  @Inject()\n  protected readonly httpAdapterHost?: HttpAdapterHost;\n\n  constructor(protected readonly applicationRef?: HttpServer) {}\n\n  catch(exception: T, host: ArgumentsHost) {\n    const applicationRef =\n      this.applicationRef ||\n      (this.httpAdapterHost && this.httpAdapterHost.httpAdapter);\n\n    if (!(exception instanceof HttpException)) {\n      return this.handleUnknownError(exception, host, applicationRef);\n    }\n    const res = exception.getResponse();\n    const message = isObject(res)\n      ? res\n      : {\n          statusCode: exception.getStatus(),\n          message: res,\n        };\n\n    applicationRef.reply(host.getArgByIndex(1), message, exception.getStatus());\n  }\n\n  public handleUnknownError(\n    exception: T,\n    host: ArgumentsHost,\n    applicationRef: AbstractHttpAdapter | HttpServer,\n  ) {\n    const body = {\n      statusCode: HttpStatus.INTERNAL_SERVER_ERROR,\n      message: MESSAGES.UNKNOWN_EXCEPTION_MESSAGE,\n    };\n    applicationRef.reply(host.getArgByIndex(1), body, body.statusCode);\n    if (this.isExceptionObject(exception)) {\n      return BaseExceptionFilter.logger.error(\n        exception.message,\n        exception.stack,\n      );\n    }\n    return BaseExceptionFilter.logger.error(exception);\n  }\n\n  public isExceptionObject(err: any): err is Error {\n    return isObject(err) && !!(err as Error).message;\n  }\n}\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/packages/core/exceptions/base-exception-filter.ts b/packages/core/exceptions/base-exception-filter.ts
+--- a/packages/core/exceptions/base-exception-filter.ts	(revision 41415b5b9144549114f52d99bbcfdaa7d1fbea0a)
++++ b/packages/core/exceptions/base-exception-filter.ts	(date 1611453885097)
+@@ -38,7 +38,7 @@
+           message: res,
+         };
+ 
+-    applicationRef.reply(host.getArgByIndex(1), message, exception.getStatus());
++    applicationRef.reply(host.getArgByIndex(1), message, exception.getStatus()); // fixme getArgByIndex is wrong for gql
+   }
+ 
+   public handleUnknownError(
