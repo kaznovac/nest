@@ -38,7 +38,7 @@ export class BaseExceptionFilter<T = any> implements ExceptionFilter<T> {
           message: res,
         };
 
-    applicationRef.reply(host.getArgByIndex(1), message, exception.getStatus());
+    applicationRef.reply(host.getArgByIndex(1), message, exception.getStatus()); // fixme getArgByIndex is wrong for gqlContext
   }
 
   public handleUnknownError(
