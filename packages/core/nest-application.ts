@@ -55,7 +55,7 @@ export class NestApplication
     MicroservicesModule && new MicroservicesModule();
   private readonly socketModule = SocketModule && new SocketModule();
   private readonly routesResolver: Resolver;
-  private readonly microservices: any[] = [];
+  private readonly microservices: INestMicroservice[] = [];
   private httpServer: any;
   private isListening = false;
 
@@ -84,7 +84,7 @@ export class NestApplication
 
     await Promise.all(
       iterate(this.microservices).map(async microservice => {
-        microservice.setIsTerminated(true);
+        // microservice.setIsTerminated(true); // close sets this is this needed to prevent termination? seems like it prevents hooks from firing, nope that's the second onw in close xD
         await microservice.close();
       }),
     );
@@ -200,9 +200,9 @@ export class NestApplication
       microserviceOptions,
       applicationConfig,
     );
-    instance.registerListeners();
-    instance.setIsInitialized(true);
-    instance.setIsInitHookCalled(true);
+    // instance.registerListeners();
+    // instance.setIsInitialized(true);
+    // instance.setIsInitHookCalled(true);
 
     this.microservices.push(instance);
     return instance;
@@ -217,7 +217,7 @@ export class NestApplication
   }
 
   public startAllMicroservices(callback?: () => void): this {
-    Promise.all(this.microservices.map(this.listenToPromise)).then(
+    Promise.all(this.microservices.map(m => m.listenAsync())).then(
       () => callback && callback(),
     );
     return this;
@@ -354,10 +354,14 @@ export class NestApplication
       instance,
     );
   }
-
-  private listenToPromise(microservice: INestMicroservice) {
-    return new Promise<void>(async resolve => {
-      await microservice.listen(resolve);
-    });
-  }
+  //
+  // private microserviceListenToPromise(microservice: INestMicroservice) {
+  //   return new Promise<void>(async resolve => {
+  //     // microservice.registerListeners(); // not needed init / listen does this, this just breaks application config
+  //     // microservice.setIsInitialized(true);
+  //     // microservice.setIsInitHookCalled(true);
+  //
+  //     await microservice.listen(resolve);
+  //   });
+  // }
 }
